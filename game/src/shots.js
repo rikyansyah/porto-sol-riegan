@@ -1,86 +1,52 @@
-// Screenshot scenes Porto Sol (?shot=start|chase|mission|heist).
-// Tiap scene memainkan aturan nyata dari dunia segar dengan autopilot
-// (bukan mockup): supir otomatis mengikuti jalan, pejalan kaki berjalan,
-// polisi mengejar, lalu frame yang sama selalu terulang dari seed tetap.
-import { STEP } from './config.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
-
-const SAMPLE = STEP;
-
-function fakeInput(axisFn) {
-  return { axis: axisFn, takeActions() { return { flags: 0, clicked: false }; } };
-}
-function stillInput() { return fakeInput(() => ({ x: 0, y: 0, run: false, handbrake: false })); }
-function driveInput(state) {
-  return fakeInput(() => {
-    const car = state.player.car;
-    if (!car) return { x: 0, y: 0, run: false, handbrake: false };
-    // Bidik persimpangan berikutnya di depan: belok mengikuti grid jalan.
-    const ahead = 320;
-    const tx = car.x + Math.cos(car.angle) * ahead;
-    const ty = car.y + Math.sin(car.angle) * ahead;
-    let want = Math.atan2(ty - car.y, tx - car.x);
-    // Di dekat persimpangan, pilih jalan lurus atau belok secara berkala
-    // agar mobil tidak menabrak blok bangunan di ujung jalan.
-    const t = state.time;
-    const turn = Math.sin(t * 0.35) > 0.55 ? Math.PI / 2 : 0;
-    want = car.angle + turn * 0.4;
-    let diff = want - car.angle;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    return { x: diff > 0.12 ? 1 : diff < -0.12 ? -1 : 0, y: -1, run: false, handbrake: false };
-  });
-}
-function walkToInput(state, tx, ty) {
-  return fakeInput(() => {
-    const p = state.player;
-    const dx = tx - p.x, dy = ty - p.y, d = Math.hypot(dx, dy) || 1;
-    if (d < 20) return { x: 0, y: 0, run: false, handbrake: false };
-    return { x: dx / d, y: dy / d, run: false, handbrake: false };
-  });
+// Deterministic screenshot scenes. ?shot=start|chase|mission|heist with
+// ?seed=<n> arranges real game entities, then flags window.__shotReady
+// once a frame of the arranged scene has actually been drawn.
+export function parseShotParams() {
+  const q = new URLSearchParams(location.search);
+  const seedRaw = parseInt(q.get('seed') || '1', 10);
+  return { shot: q.get('shot') || null, seed: Number.isFinite(seedRaw) ? seedRaw : 1 };
 }
 
-export function stageShot(name, world) {
-  const state = world.state;
-  world.reset();
-  if (name === 'chase') {
-    // Duduk di sedan kuning, wanted 3, polisi mengejar, nyetir 9 detik.
-    const car = state.cars[0];
-    state.player.inCar = true; state.player.car = car; car.parked = false;
-    state.player.x = car.x; state.player.y = car.y;
-    state.wanted = 3; state.wantedHeat = 60;
-    state.mission.index = 1; state.mission.stage = 1; state.mission.timer = 25;
-    state.mission.text = 'Kabur dari razia! Bersembunyi di taman sampai panas reda.';
-    state.mission.marker = { x: 1200, y: 1200 };
-    for (let i = 0; i < 9 / SAMPLE; i++) world.step(SAMPLE, driveInput(state), {});
-    return { screen: SCREEN_PLAY, best: 400 };
+export function stageShot(state, name) {
+  const p = state.player;
+  if (name === 'start') {
+    state.mode = 'title';
+    p.x = 800; p.y = 860;
+  } else if (name === 'chase') {
+    state.mode = 'play';
+    const car = state.traffic[0] || state.allCars[0];
+    if (car) {
+      car.x = 1000; car.y = 1000; car.angle = 0; car.parked = false; car.speed = 210;
+      p.car = car; car.driver = true; p.x = car.x; p.y = car.y;
+      state.traffic = state.traffic.filter((c) => c !== car);
+      state.parked = state.parked.filter((c) => c !== car);
+    }
+    state.wanted = 3;
+    state.policeCars.push(
+      { x: 850, y: 940, angle: 0.3, speed: 180, color: '#e5e7eb', w: 40, h: 21, hp: 90, isPolice: true, driver: true, parked: false },
+      { x: 820, y: 1080, angle: -0.3, speed: 170, color: '#e5e7eb', w: 40, h: 21, hp: 90, isPolice: true, driver: true, parked: false },
+    );
+    state.banner = { text: 'Polisi mengejar! Wanted ★★★ — jangan sampai tertangkap.', t: 30 };
+  } else if (name === 'mission') {
+    state.mode = 'play';
+    p.x = 800; p.y = 830; p.car = null;
+    state.missions.phase = 'offer'; state.missions.index = 0;
+  } else if (name === 'heist') {
+    state.mode = 'play';
+    p.x = 1400; p.y = 700; p.car = null; p.bag = true; p.money = 1800;
+    state.wanted = 4;
+    state.missions.index = 3; state.missions.phase = 'active'; state.missions.step = 1;
+    state.policeCars.push(
+      { x: 1230, y: 760, angle: 0.4, speed: 140, color: '#e5e7eb', w: 40, h: 21, hp: 90, isPolice: true, driver: true, parked: false },
+      { x: 1580, y: 780, angle: 2.6, speed: 130, color: '#e5e7eb', w: 40, h: 21, hp: 90, isPolice: true, driver: true, parked: false },
+    );
+    state.cops.push({ x: 1330, y: 770, angle: 0, hp: 40, speed: 150, color: '#1d4ed8', dead: false });
+    state.banner = { text: 'Rampokan Bank Sol berhasil — bawa tasnya ke dermaga!', t: 30 };
   }
-  if (name === 'mission') {
-    // Jalan kaki menuju paket pantai, misi 3, wanted 1, NPC di sekitar.
-    state.mission.index = 2; state.mission.stage = 0;
-    state.mission.text = 'Ambil Paket Pantai di tepi laut Porto Sol.';
-    state.mission.marker = { x: 300, y: 600 };
-    state.player.x = 420; state.player.y = 700;
-    state.wanted = 1; state.wantedHeat = 40;
-    state.cash = 1000;
-    for (let i = 0; i < 7 / SAMPLE; i++) world.step(SAMPLE, walkToInput(state, 300, 600), {});
-    return { screen: SCREEN_PLAY, best: 1000 };
-  }
-  if (name === 'heist') {
-    // Misi akhir: uang bank didapat, wanted 5, kabur naik mobil ke dermaga.
-    state.mission.index = 3; state.mission.stage = 1;
-    state.mission.text = 'Kabur ke dermaga selatan — jangan tertangkap!';
-    state.mission.marker = { x: 2800, y: 2250 };
-    state.cash = 3700; state.wanted = 5; state.wantedHeat = 60;
-    const car = state.cars[3];
-    state.player.inCar = true; state.player.car = car; car.parked = false;
-    car.x = 1500; car.y = 700; car.angle = Math.PI / 2;
-    state.player.x = car.x; state.player.y = car.y;
-    state.enemies.push({ x: 1400, y: 660, hp: 50, angle: 0, speed: 80, guard: true, cool: 0 });
-    for (let i = 0; i < 7 / SAMPLE; i++) world.step(SAMPLE, driveInput(state), {});
-    return { screen: SCREEN_PLAY, best: 3700 };
-  }
-  // start: layar judul di atas kota yang hidup 5 detik.
-  for (let i = 0; i < 5 / SAMPLE; i++) world.step(SAMPLE, stillInput(), {});
-  return { screen: SCREEN_TITLE, best: 0 };
+  // Settle camera on the subject before signalling readiness.
+  state.updateCamera(1);
+}
+
+export function signalShotReady(state) {
+  requestAnimationFrame(() => requestAnimationFrame(() => { window.__shotReady = true; }));
 }

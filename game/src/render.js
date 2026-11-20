@@ -1,214 +1,204 @@
-// Renderer Porto Sol: menggambar kota top-down (laut, pantai, jalan,
-// bangunan warna-warni, taman, pelabuhan), semua entitas, lalu HUD lengkap:
-// cash, health bar, bintang wanted, teks misi, petunjuk kontrol, minimap,
-// dan layar judul / pause / game over.
-import { WORLD, ROAD_X, ROAD_Y, ROAD, COLORS, HIDEOUT, BANK } from './config.js';
-import { PACKAGES } from './missions.js';
+// All drawing: the city, entities, effects, HUD, minimap and full-screen
+// panels. The camera centres on the player (or their car) in world space.
+import { WORLD_W, WORLD_H, VIEW_W, VIEW_H, ROAD_X, ROAD_Y, ROAD_W, PALETTE, HIDEOUT, BANK } from './config.js';
 
-export const SCREEN_TITLE = 'title';
-export const SCREEN_PLAY = 'play';
-export const SCREEN_PAUSED = 'paused';
-export const SCREEN_OVER = 'over';
+function rr(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, r);
+}
 
-export function createRenderer(canvas) {
-  const ctx = canvas.getContext('2d');
-  function resize() {
-    canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+export function drawCar(ctx, car, time) {
+  ctx.save(); ctx.translate(car.x, car.y); ctx.rotate(car.angle);
+  if (car.flash > 0) { ctx.shadowColor = '#fff'; ctx.shadowBlur = 12; }
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; rr(ctx, -car.w / 2 + 2, -car.h / 2 + 3, car.w, car.h, 6); ctx.fill();
+  ctx.fillStyle = car.color; rr(ctx, -car.w / 2, -car.h / 2, car.w, car.h, 6); ctx.fill();
+  ctx.fillStyle = 'rgba(20,30,45,0.85)'; rr(ctx, -6, -car.h / 2 + 3, 15, car.h - 6, 3); ctx.fill();
+  ctx.fillStyle = '#111'; ctx.fillRect(-car.w / 2 + 3, -car.h / 2 - 2, 8, 4); ctx.fillRect(-car.w / 2 + 3, car.h / 2 - 2, 8, 4);
+  ctx.fillRect(car.w / 2 - 11, -car.h / 2 - 2, 8, 4); ctx.fillRect(car.w / 2 - 11, car.h / 2 - 2, 8, 4);
+  if (car.isPolice) {
+    ctx.fillStyle = '#1d4ed8'; ctx.fillRect(-10, -4, 20, 8);
+    const blink = Math.floor(time * 4) % 2 === 0;
+    ctx.fillStyle = blink ? '#ef4444' : '#3b82f6';
+    ctx.beginPath(); ctx.arc(0, 0, 4.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#111827'; ctx.font = 'bold 7px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('POLISI', 0, -car.h / 2 - 4);
   }
-  window.addEventListener('resize', resize);
-  resize();
+  if (car.isTarget) { ctx.strokeStyle = '#ffd21f'; ctx.lineWidth = 2; rr(ctx, -car.w / 2 - 3, -car.h / 2 - 3, car.w + 6, car.h + 6, 8); ctx.stroke(); }
+  ctx.restore();
+}
 
-  function drawCar(x, y, angle, color, police) {
-    ctx.save(); ctx.translate(x, y); ctx.rotate(angle);
-    ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(-26, -14, 54, 30);
-    ctx.fillStyle = color; ctx.fillRect(-27, -13, 54, 26);
-    ctx.fillStyle = police ? '#dfe8ff' : '#20242a'; ctx.fillRect(-8, -11, 18, 22);
-    ctx.fillStyle = '#ffd94d'; ctx.fillRect(24, -11, 3, 6); ctx.fillRect(24, 5, 3, 6);
-    if (police) { ctx.fillStyle = '#e63946'; ctx.fillRect(-2, -13, 8, 5); ctx.fillStyle = '#2f80ed'; ctx.fillRect(6, -13, 8, 5); }
-    ctx.restore();
+function drawPerson(ctx, p, isPlayer, time) {
+  ctx.save(); ctx.translate(p.x, p.y);
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(0, 3, 9, 5, 0, 0, Math.PI * 2); ctx.fill();
+  const walk = Math.sin(time * 10 + p.x * 0.1) * 2;
+  ctx.fillStyle = '#26324a'; ctx.fillRect(-6, 2, 5, 7 + walk * 0.3); ctx.fillRect(1, 2, 5, 7 - walk * 0.3);
+  ctx.fillStyle = p.color || '#f59e0b'; ctx.beginPath(); ctx.arc(0, 0, 9, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#f2c09a'; ctx.beginPath(); ctx.arc(0, -1, 5.5, 0, Math.PI * 2); ctx.fill();
+  if (p.flash > 0) { ctx.fillStyle = 'rgba(239,68,68,0.55)'; ctx.beginPath(); ctx.arc(0, 0, 11, 0, Math.PI * 2); ctx.fill(); }
+  if (isPlayer) {
+    const a = p.aim ?? 0;
+    ctx.strokeStyle = '#374151'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(Math.cos(a) * 6, Math.sin(a) * 6); ctx.lineTo(Math.cos(a) * 15, Math.sin(a) * 15); ctx.stroke();
+    if (p.bag) { ctx.fillStyle = '#16a34a'; rr(ctx, 6, -12, 12, 10, 3); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = 'bold 8px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('$', 12, -4); }
   }
+  ctx.restore();
+}
 
-  function drawWorld(state) {
-    const cam = state.camera;
-    const vw = canvas.width, vh = canvas.height;
-    const ox = vw / 2 - cam.x, oy = vh / 2 - cam.y;
-    ctx.save(); ctx.translate(ox, oy);
-    // Dasar rumput + laut barat + pantai + pelabuhan selatan.
-    ctx.fillStyle = COLORS.grass; ctx.fillRect(0, 0, WORLD.width, WORLD.height);
-    ctx.fillStyle = COLORS.sea; ctx.fillRect(0, 0, 120, WORLD.height);
-    ctx.fillStyle = COLORS.sand; ctx.fillRect(120, 0, 60, WORLD.height);
-    ctx.fillStyle = '#8a6d4b'; ctx.fillRect(0, 2260, WORLD.width, 140);
-    ctx.fillStyle = '#5b7a99'; ctx.fillRect(2400, 2260, 700, 30);
-    // Taman tengah.
-    ctx.fillStyle = COLORS.parkGrass; ctx.fillRect(1048, 1048, 304, 304);
-    ctx.fillStyle = '#2e8b57';
-    for (let i = 0; i < 8; i++) { ctx.beginPath(); ctx.arc(1080 + (i % 4) * 70, 1080 + Math.floor(i / 4) * 130, 22, 0, Math.PI * 2); ctx.fill(); }
-    // Tempat persembunyian (lingkaran hijau).
-    ctx.strokeStyle = '#2ecc71'; ctx.lineWidth = 4;
-    ctx.beginPath(); ctx.arc(HIDEOUT.x, HIDEOUT.y, HIDEOUT.r, 0, Math.PI * 2); ctx.stroke();
-    ctx.fillStyle = 'rgba(46,204,113,0.15)'; ctx.beginPath(); ctx.arc(HIDEOUT.x, HIDEOUT.y, HIDEOUT.r, 0, Math.PI * 2); ctx.fill();
-    // Jalan + garis tengah kuning.
-    ctx.fillStyle = COLORS.road;
-    for (const rx of ROAD_X) ctx.fillRect(rx - ROAD.width / 2, 0, ROAD.width, WORLD.height);
-    for (const ry of ROAD_Y) ctx.fillRect(0, ry - ROAD.width / 2, WORLD.width, ROAD.width);
-    ctx.strokeStyle = COLORS.roadLine; ctx.lineWidth = 3; ctx.setLineDash([24, 24]);
-    for (const rx of ROAD_X) { ctx.beginPath(); ctx.moveTo(rx, 0); ctx.lineTo(rx, WORLD.height); ctx.stroke(); }
-    for (const ry of ROAD_Y) { ctx.beginPath(); ctx.moveTo(0, ry); ctx.lineTo(WORLD.width, ry); ctx.stroke(); }
-    ctx.setLineDash([]);
-    // Bangunan + atap + jendela.
-    for (const b of state.buildings) {
-      ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(b.x + 4, b.y + 5, b.w, b.h);
-      ctx.fillStyle = b.color; ctx.fillRect(b.x, b.y, b.w, b.h);
-      ctx.fillStyle = b.roof; ctx.fillRect(b.x, b.y, b.w, 12);
-      ctx.fillStyle = '#fff8d0';
-      for (let i = 0; i < b.windows; i++) ctx.fillRect(b.x + 10 + (i % 3) * 30, b.y + 22 + Math.floor(i / 3) * 26, 14, 12);
-    }
-    // Bank Sol (gedung berlabel) dan kontainer pelabuhan.
-    ctx.fillStyle = '#f5e05a'; ctx.fillRect(BANK.x - 60, BANK.y - 40, 120, 80);
-    ctx.fillStyle = '#1c2f6e'; ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText('BANK SOL', BANK.x, BANK.y + 5);
-    ctx.fillStyle = '#e67e22'; ctx.fillRect(2500, 2280, 90, 40);
-    ctx.fillStyle = '#27ae60'; ctx.fillRect(2620, 2280, 90, 40);
-    ctx.fillStyle = '#8e44ad'; ctx.fillRect(2740, 2280, 90, 40);
-    // Pickup.
-    for (const pk of state.pickups) {
-      if (pk.taken) continue;
-      ctx.fillStyle = pk.kind === 'health' ? '#e63946' : pk.kind === 'ammo' ? '#f2b705' : '#2ecc71';
-      ctx.beginPath(); ctx.arc(pk.x, pk.y, 13, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText(pk.kind === 'health' ? '+' : pk.kind === 'ammo' ? 'A' : '$', pk.x, pk.y + 5);
-    }
-    // Penanda misi (berdenyut).
-    const mk = state.mission.marker;
-    if (mk) {
-      const r = 22 + Math.sin(state.time * 4) * 5;
-      ctx.strokeStyle = '#ffd94d'; ctx.lineWidth = 5;
-      ctx.beginPath(); ctx.arc(mk.x, mk.y, r, 0, Math.PI * 2); ctx.stroke();
-      ctx.fillStyle = '#ffd94d'; ctx.beginPath(); ctx.arc(mk.x, mk.y, 7, 0, Math.PI * 2); ctx.fill();
-    }
-    // Pejalan kaki.
-    for (const ped of state.peds) {
-      ctx.fillStyle = ped.color; ctx.beginPath(); ctx.arc(ped.x, ped.y, 9, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#f2c89b'; ctx.beginPath(); ctx.arc(ped.x, ped.y - 3, 5, 0, Math.PI * 2); ctx.fill();
-    }
-    // Mobil lalu lintas + parkir.
-    for (const car of state.cars) drawCar(car.x, car.y, car.angle, car.color, false);
-    // Polisi (dengan lampu menyala).
-    for (const cop of state.policeCars) drawCar(cop.x, cop.y, cop.angle, cop.color, true);
-    // Musuh.
-    for (const e of state.enemies) {
-      ctx.fillStyle = '#7b2d26'; ctx.beginPath(); ctx.arc(e.x, e.y, 13, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#111'; ctx.fillRect(e.x - 8, e.y - 24, 16, 4);
-      ctx.fillStyle = '#e63946'; ctx.fillRect(e.x - 8, e.y - 24, 16 * (e.hp / 50), 4);
-    }
-    // Peluru.
-    ctx.fillStyle = '#ffe14d';
-    for (const b of state.bullets) { ctx.beginPath(); ctx.arc(b.x, b.y, 4, 0, Math.PI * 2); ctx.fill(); }
-    // Pemain.
-    const p = state.player;
-    if (!p.inCar) {
-      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.angle);
-      ctx.fillStyle = '#1f6feb'; ctx.beginPath(); ctx.arc(0, 0, 14, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#ffd94d'; ctx.fillRect(10, -3, 16, 6);
-      ctx.restore();
-    } else if (p.car) {
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(p.car.x, p.car.y, 34, 0, Math.PI * 2); ctx.stroke();
-    }
-    ctx.restore();
+export function render(state) {
+  const ctx = state.ctx;
+  const cam = state.camera;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = PALETTE.waterDeep; ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  ctx.save(); ctx.translate(-cam.x, -cam.y);
+  const vx = cam.x - 40, vy = cam.y - 40, vw = VIEW_W + 80, vh = VIEW_H + 80;
+  // Ground: grass, then park, beach and water.
+  ctx.fillStyle = PALETTE.grass; ctx.fillRect(vx, vy, vw, vh);
+  ctx.fillStyle = PALETTE.park; ctx.beginPath(); ctx.arc(HIDEOUT.x, HIDEOUT.y, 190, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = PALETTE.sand; ctx.fillRect(0, 2180, WORLD_W, 100); ctx.fillRect(2980, 0, 100, WORLD_H);
+  ctx.fillStyle = PALETTE.water; ctx.fillRect(0, 2280, WORLD_W, 120); ctx.fillRect(3080, 0, 120, WORLD_H);
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 2;
+  for (let i = 0; i < 8; i++) { const y = 2310 + i * 12 + Math.sin(state.time * 1.4 + i) * 3; ctx.beginPath(); ctx.moveTo(Math.max(0, vx), y); ctx.lineTo(Math.min(WORLD_W, vx + vw), y); ctx.stroke(); }
+  // Sidewalks and roads.
+  ctx.fillStyle = PALETTE.sidewalk;
+  for (const rx of ROAD_X) ctx.fillRect(rx - ROAD_W / 2 - 12, 0, ROAD_W + 24, WORLD_H);
+  for (const ry of ROAD_Y) ctx.fillRect(0, ry - ROAD_W / 2 - 12, WORLD_W, ROAD_W + 24);
+  ctx.fillStyle = PALETTE.road;
+  for (const rx of ROAD_X) ctx.fillRect(rx - ROAD_W / 2, 0, ROAD_W, WORLD_H);
+  for (const ry of ROAD_Y) ctx.fillRect(0, ry - ROAD_W / 2, WORLD_W, ROAD_W);
+  ctx.strokeStyle = PALETTE.roadLine; ctx.lineWidth = 3; ctx.setLineDash([22, 18]);
+  for (const rx of ROAD_X) { ctx.beginPath(); ctx.moveTo(rx, 0); ctx.lineTo(rx, WORLD_H); ctx.stroke(); }
+  for (const ry of ROAD_Y) { ctx.beginPath(); ctx.moveTo(0, ry); ctx.lineTo(WORLD_W, ry); ctx.stroke(); }
+  ctx.setLineDash([]);
+  // Market stalls.
+  ctx.fillStyle = '#b45309'; ctx.fillRect(910, 930, 180, 12);
+  for (let i = 0; i < 5; i++) { ctx.fillStyle = i % 2 ? '#ef4444' : '#f59e0b'; ctx.fillRect(918 + i * 34, 942, 28, 22); }
+  // Buildings, crates, trees, lamps.
+  for (const b of state.world.buildings) {
+    if (b.x + b.w < vx || b.y + b.h < vy || b.x > vx + vw || b.y > vy + vh) continue;
+    ctx.fillStyle = 'rgba(0,0,0,0.18)'; ctx.fillRect(b.x + 6, b.y + 8, b.w, b.h);
+    ctx.fillStyle = b.color; rr(ctx, b.x, b.y, b.w, b.h, 5); ctx.fill();
+    ctx.strokeStyle = 'rgba(90,50,20,0.5)'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.28)';
+    const cols = Math.max(2, Math.floor(b.w / 34));
+    for (let i = 0; i < cols; i++) ctx.fillRect(b.x + 10 + i * 32, b.y + 12, 16, 10);
+    if (b.w > 92) { ctx.fillStyle = '#3b2f2f'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(b.name, b.x + b.w / 2, b.y + b.h - 10); }
   }
-
-  function drawMinimap(state) {
-    const s = 150, x0 = canvas.width - s - 16, y0 = 16;
-    ctx.fillStyle = 'rgba(10,20,30,0.75)'; ctx.fillRect(x0 - 4, y0 - 4, s + 8, s + 8);
-    ctx.strokeStyle = '#fff'; ctx.strokeRect(x0 - 4, y0 - 4, s + 8, s + 8);
-    const sx = (x) => x0 + (x / WORLD.width) * s;
-    const sy = (y) => y0 + (y / WORLD.height) * s;
-    ctx.strokeStyle = '#8a97a8'; ctx.lineWidth = 1;
-    for (const rx of ROAD_X) { ctx.beginPath(); ctx.moveTo(sx(rx), sy(0)); ctx.lineTo(sx(rx), sy(WORLD.height)); ctx.stroke(); }
-    for (const ry of ROAD_Y) { ctx.beginPath(); ctx.moveTo(sx(0), sy(ry)); ctx.lineTo(sx(WORLD.width), sy(ry)); ctx.stroke(); }
-    ctx.fillStyle = '#2f9fd8'; ctx.fillRect(x0, y0, 6, s);
-    const mk = state.mission.marker;
-    if (mk) { ctx.fillStyle = '#ffd94d'; ctx.beginPath(); ctx.arc(sx(mk.x), sy(mk.y), 5, 0, Math.PI * 2); ctx.fill(); }
-    for (const cop of state.policeCars) { ctx.fillStyle = '#5aa2ff'; ctx.beginPath(); ctx.arc(sx(cop.x), sy(cop.y), 3, 0, Math.PI * 2); ctx.fill(); }
-    const p = state.player;
-    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(sx(p.x), sy(p.y), 4, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#ffd94d'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'left';
-    ctx.fillText('PORTO SOL', x0, y0 + s + 20);
+  for (const c of state.world.crates) { ctx.fillStyle = c.color; ctx.fillRect(c.x, c.y, c.w, c.h); ctx.strokeStyle = 'rgba(0,0,0,0.3)'; ctx.strokeRect(c.x, c.y, c.w, c.h); }
+  for (const boat of state.world.boats) {
+    ctx.save(); ctx.translate(boat.x, boat.y); ctx.rotate(boat.a);
+    ctx.fillStyle = '#f8fafc'; ctx.beginPath(); ctx.moveTo(-20, 0); ctx.lineTo(8, -9); ctx.lineTo(22, 0); ctx.lineTo(8, 9); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#d94f4f'; ctx.fillRect(-4, -3, 10, 6); ctx.restore();
   }
-
-  function drawHud(state, best) {
-    const p = state.player;
-    ctx.textAlign = 'left';
-    // Panel atas kiri: cash, HP, amunisi.
-    ctx.fillStyle = 'rgba(10,20,30,0.72)'; ctx.fillRect(12, 12, 300, 96);
-    ctx.fillStyle = '#2ecc71'; ctx.font = 'bold 22px sans-serif';
-    ctx.fillText(`$${state.cash}`, 24, 40);
-    ctx.fillStyle = '#fff'; ctx.font = '14px sans-serif';
-    ctx.fillText(`Misi ${Math.min(state.mission.index + 1, 4)}/4  •  Mobil dicuri: ${state.carsStolen}  •  Ammo: ${p.ammo}`, 24, 62);
-    ctx.fillStyle = '#444'; ctx.fillRect(24, 72, 200, 12);
-    ctx.fillStyle = p.hp > 40 ? '#2ecc71' : '#e63946'; ctx.fillRect(24, 72, 200 * (p.hp / 100), 12);
-    ctx.fillStyle = '#fff'; ctx.font = '12px sans-serif'; ctx.fillText(`HP ${Math.max(0, Math.round(p.hp))}`, 230, 82);
-    // Bintang wanted + label kecil agar terbaca di contact sheet juri.
-    ctx.font = 'bold 30px sans-serif';
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 11px sans-serif';
-    ctx.fillText('WANTED', 330, 22);
-    ctx.font = 'bold 30px sans-serif';
-    for (let i = 0; i < 5; i++) {
-      ctx.fillStyle = i < state.wanted ? '#ffd94d' : 'rgba(255,255,255,0.25)';
-      ctx.fillText('★', 330 + i * 34, 44);
-    }
-    // Objektif misi + pesan.
-    ctx.fillStyle = 'rgba(10,20,30,0.72)'; ctx.fillRect(12, canvas.height - 86, Math.min(760, canvas.width - 24), 74);
-    ctx.fillStyle = '#ffd94d'; ctx.font = 'bold 15px sans-serif';
-    ctx.fillText(state.mission.done ? 'SEMUA MISI SELESAI' : `MISI ${state.mission.index + 1}: ${['Mobil Pertama', 'Kabur dari Razia', 'Tiga Paket', 'Perampokan Bank Sol'][state.mission.index] || ''}`, 24, canvas.height - 62);
-    ctx.fillStyle = '#fff'; ctx.font = '14px sans-serif';
-    ctx.fillText(state.mission.text.slice(0, 110), 24, canvas.height - 40);
-    if (state.messageTimer > 0) {
-      ctx.fillStyle = '#ffe14d'; ctx.font = 'bold 15px sans-serif';
-      ctx.fillText(state.message.slice(0, 120), 24, canvas.height - 18);
-    }
-    ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.font = '12px sans-serif';
-    ctx.fillText('WASD gerak/nyetir • E masuk-keluar mobil • Klik tembak/pukul • Spasi rem tangan • P pause', 24, canvas.height - 100);
-    drawMinimap(state);
+  for (const t of state.world.trees) {
+    if (t.x < vx || t.x > vx + vw || t.y < vy || t.y > vy + vh) continue;
+    ctx.fillStyle = '#8a5a2b'; ctx.fillRect(t.x - 2, t.y, 4, 9);
+    ctx.fillStyle = t.palm ? '#2f9e44' : '#22863a'; ctx.beginPath(); ctx.arc(t.x, t.y - 3, t.r, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.beginPath(); ctx.arc(t.x - 3, t.y - 6, t.r * 0.45, 0, Math.PI * 2); ctx.fill();
   }
-
-  function drawTitle(state, best) {
-    drawWorld(state);
-    ctx.fillStyle = 'rgba(8,16,28,0.62)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#ffd94d'; ctx.font = 'bold 84px sans-serif';
-    ctx.fillText('PORTO SOL', canvas.width / 2, canvas.height / 2 - 120);
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 26px sans-serif';
-    ctx.fillText('Kota pelabuhan. Satu fixer. Empat misi. Polisi di mana-mana.', canvas.width / 2, canvas.height / 2 - 70);
-    ctx.font = '17px sans-serif'; ctx.fillStyle = '#ffe9a8';
-    ctx.fillText('Mara menunggumu di Porto Sol: curi mobil, kabur dari razia, antar paket, lalu rampok Bank Sol.', canvas.width / 2, canvas.height / 2 - 36);
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 22px sans-serif';
-    ctx.fillText('Tekan ENTER untuk mulai  •  C untuk lanjutkan simpanan', canvas.width / 2, canvas.height / 2 + 10);
-    ctx.font = '15px sans-serif'; ctx.fillStyle = '#cfe3ff';
-    ctx.fillText('WASD jalan/nyetir  •  E masuk-keluar mobil  •  Klik tembak/pukul  •  P pause', canvas.width / 2, canvas.height / 2 + 44);
-    if (best > 0) { ctx.fillStyle = '#2ecc71'; ctx.font = 'bold 16px sans-serif'; ctx.fillText(`Rekor cash: $${best}`, canvas.width / 2, canvas.height / 2 + 76); }
+  for (const l of state.world.lamps) { ctx.fillStyle = '#fbbf24'; ctx.beginPath(); ctx.arc(l.x, l.y, 3, 0, Math.PI * 2); ctx.fill(); }
+  // Mission marker beam.
+  const marker = state.marker;
+  if (marker && state.mode === 'play') {
+    const pulse = 1 + Math.sin(state.time * 4) * 0.15;
+    ctx.fillStyle = marker.color + '33'; ctx.beginPath(); ctx.arc(marker.x, marker.y, 44 * pulse, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = marker.color; ctx.beginPath(); ctx.arc(marker.x, marker.y, 13, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#111827'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('!', marker.x, marker.y + 5);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 13px sans-serif'; ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 3;
+    ctx.strokeText(marker.label, marker.x, marker.y - 26); ctx.fillText(marker.label, marker.x, marker.y - 26);
   }
+  // Pickups, cars, people.
+  for (const pk of state.pickups) { ctx.fillStyle = '#22c55e'; rr(ctx, pk.x - 8, pk.y - 6 + Math.sin(state.time * 5 + pk.x) * 2, 16, 12, 2); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = 'bold 9px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('$', pk.x, pk.y + 4); }
+  for (const car of state.allCars) if (car !== state.player.car) drawCar(ctx, car, state.time);
+  for (const car of state.policeCars) drawCar(ctx, car, state.time);
+  for (const p of state.peds) if (!p.dead) drawPerson(ctx, p, false, state.time);
+  for (const c of state.cops) if (!c.dead) drawPerson(ctx, { ...c, color: '#1d4ed8' }, false, state.time);
+  if (state.player.car) drawCar(ctx, state.player.car, state.time);
+  else drawPerson(ctx, state.player, true, state.time);
+  // Shot tracer + muzzle.
+  if (state.shotFx) { ctx.strokeStyle = 'rgba(255,220,120,0.9)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(state.shotFx.x1, state.shotFx.y1); ctx.lineTo(state.shotFx.x2, state.shotFx.y2); ctx.stroke(); }
+  ctx.restore();
+  drawHud(state);
+  if (state.mode === 'title') drawTitle(state);
+  else if (state.mode === 'paused') drawPanel(state, 'PAUSED', ['Porto Sol menunggu.', 'P / Esc untuk lanjut — jalanan tidak ke mana-mana.'], 'P untuk lanjut');
+  else if (state.mode === 'over') drawPanel(state, state.overReason === 'busted' ? 'BUSTED' : 'WASTED', [state.overReason === 'busted' ? 'Polisi menahanmu terlalu lama saat kau berhenti.' : 'HP-mu habis di jalanan Porto Sol.', `Uang terakhir: $${state.player.money}`], 'Enter untuk coba lagi');
+  else if (state.mode === 'won') drawPanel(state, 'PORTO SOL TAMAT', ['Empat pekerjaan Mara selesai. Kota pelabuhan ini sekarang', 'mengenal namamu — dan polisi juga, jadi hati-hati.', `Uang akhir: $${state.player.money}`], 'Enter untuk free roam');
+}
 
-  function draw(state, screen, best) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (screen === SCREEN_TITLE) { drawTitle(state, best); return; }
-    drawWorld(state);
-    drawHud(state, best);
-    if (screen === SCREEN_PAUSED) {
-      ctx.fillStyle = 'rgba(8,16,28,0.6)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 44px sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText('PAUSE', canvas.width / 2, canvas.height / 2);
-      ctx.font = '18px sans-serif'; ctx.fillText('Tekan P / Enter untuk lanjut  •  R untuk mulai ulang', canvas.width / 2, canvas.height / 2 + 40);
-    }
-    if (screen === SCREEN_OVER) {
-      ctx.fillStyle = 'rgba(20,8,8,0.66)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = state.won ? '#2ecc71' : '#e63946'; ctx.font = 'bold 46px sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText(state.won ? 'PORTO SOL MILIKMU!' : 'TERTANGKAP / GAME OVER', canvas.width / 2, canvas.height / 2 - 10);
-      ctx.fillStyle = '#fff'; ctx.font = '20px sans-serif';
-      ctx.fillText(`Cash: $${state.cash}  •  Misi selesai: ${state.mission.index}/4  •  Tekan ENTER untuk main lagi`, canvas.width / 2, canvas.height / 2 + 30);
-    }
+function drawHud(state) {
+  const ctx = state.ctx;
+  const p = state.player;
+  ctx.fillStyle = 'rgba(10,14,20,0.72)'; rr(ctx, 14, 14, 300, 86, 10); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'left'; ctx.fillText('HP', 26, 38);
+  ctx.fillStyle = '#3f1d1d'; ctx.fillRect(58, 26, 180, 15);
+  ctx.fillStyle = p.hp > 30 ? '#22c55e' : '#ef4444'; ctx.fillRect(58, 26, 180 * Math.max(0, p.hp) / 100, 15);
+  ctx.fillStyle = '#ffd21f'; ctx.font = 'bold 20px sans-serif'; ctx.fillText(`$${p.money}`, 26, 68);
+  ctx.fillStyle = '#cbd5e1'; ctx.font = '13px sans-serif';
+  ctx.fillText(p.car ? 'Di dalam mobil — E keluar' : 'Jalan kaki — E masuk mobil dekat', 110, 66);
+  ctx.fillText(`Pistol: ${state.combat.ammo}/${state.combat.reserve}${state.combat.reloading > 0 ? ' (reload…)' : ''}  R reload`, 26, 92);
+  // Wanted stars.
+  ctx.font = '24px sans-serif'; ctx.textAlign = 'right';
+  for (let i = 0; i < 5; i++) { ctx.fillStyle = i < Math.floor(state.wanted) ? '#ffd21f' : 'rgba(255,255,255,0.25)'; ctx.fillText('★', VIEW_W - 18 - (4 - i) * 28, 42); }
+  if (state.bust > 0) { ctx.fillStyle = 'rgba(10,14,20,0.7)'; ctx.fillRect(VIEW_W - 190, 52, 172, 16); ctx.fillStyle = '#ef4444'; ctx.fillRect(VIEW_W - 188, 54, 168 * state.bust, 12); ctx.fillStyle = '#fff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('BUSTED?', VIEW_W - 104, 64); }
+  // Objective + banner.
+  ctx.textAlign = 'center';
+  if (state.banner && state.banner.t > 0) {
+    ctx.fillStyle = 'rgba(10,14,20,0.78)'; rr(ctx, VIEW_W / 2 - 390, VIEW_H - 118, 780, 44, 9); ctx.fill();
+    ctx.fillStyle = '#fde68a'; ctx.font = '14px sans-serif';
+    const txt = state.banner.text.length > 108 ? state.banner.text.slice(0, 108) + '…' : state.banner.text;
+    ctx.fillText(txt, VIEW_W / 2, VIEW_H - 90);
   }
+  ctx.fillStyle = 'rgba(10,14,20,0.66)'; rr(ctx, VIEW_W / 2 - 390, VIEW_H - 66, 780, 40, 9); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif'; ctx.fillText(state.objective || '', VIEW_W / 2, VIEW_H - 40);
+  ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.font = '12px sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText('WASD/panah gerak · E mobil · mouse aim, klik tembak · Spasi pukul · P pause', 16, VIEW_H - 12);
+  drawMinimap(state);
+}
 
-  return { draw, resize };
+function drawMinimap(state) {
+  const ctx = state.ctx;
+  const mw = 190, mh = 142, mx = VIEW_W - mw - 14, my = VIEW_H - mh - 14;
+  const sx = mw / WORLD_W, sy = mh / WORLD_H;
+  ctx.fillStyle = 'rgba(16,24,32,0.88)'; rr(ctx, mx, my, mw, mh, 8); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.stroke();
+  ctx.fillStyle = '#2e9db8'; ctx.fillRect(mx, my + 2280 * sy, mw, 120 * sy); ctx.fillRect(mx + 3080 * sx, my, 120 * sx, mh);
+  ctx.strokeStyle = '#8b93a3'; ctx.lineWidth = 1;
+  for (const rx of ROAD_X) { ctx.beginPath(); ctx.moveTo(mx + rx * sx, my); ctx.lineTo(mx + rx * sx, my + mh); ctx.stroke(); }
+  for (const ry of ROAD_Y) { ctx.beginPath(); ctx.moveTo(mx, my + ry * sy); ctx.lineTo(mx + mw, my + ry * sy); ctx.stroke(); }
+  ctx.fillStyle = '#f2e3c6'; ctx.fillRect(mx + BANK.x * sx - 3, my + BANK.y * sy - 3, 6, 6);
+  const dot = (x, y, color, r = 3) => { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(mx + x * sx, my + y * sy, r, 0, Math.PI * 2); ctx.fill(); };
+  for (const c of state.policeCars) dot(c.x, c.y, '#60a5fa');
+  for (const c of state.cops) dot(c.x, c.y, '#60a5fa', 2);
+  if (state.marker) dot(state.marker.x, state.marker.y, state.marker.color, 4);
+  const pp = state.player.car || state.player;
+  dot(pp.x, pp.y, '#ffffff', 4);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'left'; ctx.fillText('PORTO SOL', mx + 8, my + 14);
+}
+
+function drawPanel(state, title, lines, prompt) {
+  const ctx = state.ctx;
+  ctx.fillStyle = 'rgba(8,10,16,0.72)'; ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  ctx.fillStyle = '#17202b'; rr(ctx, VIEW_W / 2 - 330, 218, 660, 330, 16); ctx.fill();
+  ctx.strokeStyle = '#e8a13a'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#ffd21f'; ctx.font = 'bold 44px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(title, VIEW_W / 2, 300);
+  ctx.fillStyle = '#e5e7eb'; ctx.font = '17px sans-serif';
+  lines.forEach((l, i) => ctx.fillText(l, VIEW_W / 2, 356 + i * 28));
+  ctx.fillStyle = '#4ade80'; ctx.font = 'bold 18px sans-serif'; ctx.fillText(prompt, VIEW_W / 2, 512);
+}
+
+function drawTitle(state) {
+  const ctx = state.ctx;
+  ctx.fillStyle = 'rgba(8,12,20,0.55)'; ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd21f'; ctx.font = 'bold 84px sans-serif'; ctx.fillText('PORTO SOL', VIEW_W / 2, 190);
+  ctx.fillStyle = '#fff'; ctx.font = '20px sans-serif';
+  ctx.fillText('Kota pelabuhan yang cerah di siang hari — dan sangat sibuk di malam hari.', VIEW_W / 2, 246);
+  ctx.fillText('Mara, seorang fixer dermaga, punya empat pekerjaan untuk orang yang', VIEW_W / 2, 282);
+  ctx.fillText('tidak banyak bertanya. Curi, antar, kabur, dan rampok Bank Sol.', VIEW_W / 2, 310);
+  ctx.fillStyle = '#17202b'; rr(ctx, VIEW_W / 2 - 320, 348, 640, 178, 14); ctx.fill();
+  ctx.fillStyle = '#e5e7eb'; ctx.font = '16px sans-serif';
+  const lines = ['WASD / panah — bergerak & menyetir', 'E — masuk / keluar mobil    Enter — mulai misi di penanda', 'Mouse — bidik, klik — tembak, Spasi — pukul, R — reload', 'P / Esc — pause    Hindari polisi saat wanted naik!'];
+  lines.forEach((l, i) => ctx.fillText(l, VIEW_W / 2, 388 + i * 32));
+  ctx.fillStyle = '#4ade80'; ctx.font = 'bold 24px sans-serif';
+  ctx.fillText(state.hasSave ? 'Tekan Enter — lanjutkan permainan tersimpan' : 'Tekan Enter — mulai', VIEW_W / 2, 590);
+  ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = '13px sans-serif';
+  ctx.fillText('Game orisinal: semua nama, karakter, dan cerita di Porto Sol adalah karangan.', VIEW_W / 2, 640);
 }

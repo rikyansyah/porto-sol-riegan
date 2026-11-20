@@ -1,19 +1,24 @@
-// RNG deterministik (mulberry32) agar ?shot= dan ?seed= selalu mengulang
-// dunia yang sama: kota, lalu lintas, dan misi lahir dari satu seed.
-export function createRandom(seed) {
-  let a = seed >>> 0;
-  return {
-    next() {
-      a |= 0; a = (a + 0x6d2b79f5) | 0;
-      let t = Math.imul(a ^ (a >>> 15), 1 | a);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    },
-    range(min, max) { return min + this.next() * (max - min); },
-    int(min, max) { return Math.floor(this.range(min, max + 1)); },
-    pick(list) { return list[Math.floor(this.next() * list.length)]; },
-    chance(p) { return this.next() < p; },
-    // Angka bulat seed-aman untuk variasi kecil (mis. jumlah jendela).
-    smallInt(n) { return Math.floor(this.next() * n); },
+// Seeded RNG (mulberry32) so ?seed=<n> rebuilds the exact same city.
+export function mulberry32(seed) {
+  let a = (seed >>> 0) || 1;
+  return function next() {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+export function makeRng(seed) {
+  const next = mulberry32(seed);
+  return {
+    next,
+    rand: (min, max) => min + next() * (max - min),
+    int: (min, max) => Math.floor(min + next() * (max - min + 1)),
+    pick: (arr) => arr[Math.floor(next() * arr.length)],
+    chance: (p) => next() < p,
+    shuffle: (arr) => { const a = [...arr]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(next() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; },
+  };
+}
+export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+export const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+export const lerp = (a, b, t) => a + (b - a) * t;
